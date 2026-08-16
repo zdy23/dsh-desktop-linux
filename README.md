@@ -13,6 +13,22 @@ When the Tauri shell starts:
 
 A built-in splash page is shown briefly before the window navigates to the GUI.
 
+### Clicking the icon starts `dsh` automatically
+
+No need to start `dsh web` in a terminal first — the app finds the `dsh` executable
+by itself. Desktop-launched apps don't inherit your shell's `PATH`, so the lookup
+goes in this order:
+
+1. `DSH_BIN` env var (explicit override);
+2. `dsh` on `PATH`;
+3. Common per-user installs: `~/.local/bin/dsh`, `~/.npm-global/bin/dsh`, any
+   `~/.nvm/versions/node/*/bin/dsh`;
+4. The npx cache: `~/.npm/_npx/*/node_modules/.bin/dsh` (where `dsh` lives when
+   you run it via `npx @deepseek-ai/dsh`).
+
+So the typical setup — `dsh` only ever run through `npx` — just works from the
+app icon.
+
 ## Prerequisites
 
 - Linux (Debian 12 / Ubuntu 22.04+, or any distro where webkit2gtk-4.1 is installable)

@@ -15,6 +15,7 @@
 
 use std::{
     net::{SocketAddr, TcpStream},
+    path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::Mutex,
     thread,
@@ -88,9 +89,100 @@ fn boot_and_connect(handle: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Resolve the `dsh` executable.
+///
+/// Precedence:
+///   1. `DSH_BIN` env var (explicit override)
+///   2. `dsh` on `PATH`
+///   3. Common per-user install locations (`~/.local/bin`, `~/.npm-global/bin`,
+///      any nvm node version's bin)
+///   4. The npx cache (`~/.npm/_npx/*/node_modules/.bin/dsh`) — where `dsh`
+///      ends up when run via `npx @deepseek-ai/dsh`
+///
+/// Desktop-launched apps do not inherit the shell's PATH (nvm/npx dirs are
+/// missing), so the npx-cache scan is what makes "click the icon" work out of
+/// the box.
+fn resolve_dsh_bin() -> Option<PathBuf> {
+    // 1) explicit override
+    if let Ok(bin) = std::env::var("DSH_BIN") {
+        let p = PathBuf::from(bin);
+        if is_executable(&p) {
+            return Some(p);
+        }
+    }
+    // 2) PATH
+    if let Some(p) = find_on_path("dsh") {
+        return Some(p);
+    }
+    // 3) common per-user install locations
+    let home = std::env::var("HOME").ok()?;
+    let mut candidates = vec![
+        PathBuf::from(&home).join(".local/bin/dsh"),
+        PathBuf::from(&home).join(".npm-global/bin/dsh"),
+    ];
+    let nvm = PathBuf::from(&home).join(".nvm/versions/node");
+    if let Ok(entries) = std::fs::read_dir(&nvm) {
+        let mut versions: Vec<PathBuf> = entries
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .collect();
+        versions.sort();
+        for v in versions {
+            candidates.push(v.join("bin/dsh"));
+        }
+    }
+    for c in candidates {
+        if is_executable(&c) {
+            return Some(c);
+        }
+    }
+    // 4) npx cache: ~/.npm/_npx/<hash>/node_modules/.bin/dsh
+    let npx = PathBuf::from(&home).join(".npm/_npx");
+    if let Ok(entries) = std::fs::read_dir(&npx) {
+        let mut dirs: Vec<PathBuf> = entries
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.is_dir())
+            .collect();
+        dirs.sort();
+        for d in dirs {
+            let bin = d.join("node_modules/.bin/dsh");
+            if is_executable(&bin) {
+                return Some(bin);
+            }
+        }
+    }
+    None
+}
+
+fn find_on_path(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        let candidate = dir.join(name);
+        if is_executable(&candidate) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+#[cfg(unix)]
+fn is_executable(p: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    p.is_file() && p.metadata().map(|m| m.permissions().mode() & 0o111 != 0).unwrap_or(false)
+}
+
+#[cfg(windows)]
+fn is_executable(p: &Path) -> bool {
+    p.is_file()
+}
+
 /// Spawn `dsh web --host <host> --port <port>` and remember the child.
 fn spawn_dsh(handle: &AppHandle, host: &str, port: u16) -> Result<(), String> {
+    #[cfg(windows)]
     let bin = std::env::var("DSH_BIN").unwrap_or_else(|_| "dsh".into());
+    #[cfg(not(windows))]
+    let bin = resolve_dsh_bin()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "dsh".into());
 
     #[cfg(windows)]
     let mut cmd = {
@@ -110,7 +202,8 @@ fn spawn_dsh(handle: &AppHandle, host: &str, port: u16) -> Result<(), String> {
     let child = cmd.spawn().map_err(|e| {
         format!(
             "failed to spawn `{bin} web --host {host} --port {port}`: {e}\n\
-             Make sure `dsh` is installed and on PATH (npm i -g @deepseek-ai/dsh),\n\
+             Make sure `dsh` is available (npm i -g @deepseek-ai/dsh, or run it\n\
+             once via `npx @deepseek-ai/dsh` so it lands in the npx cache),\n\
              or set DSH_BIN to the executable path, or start `dsh web` yourself."
         )
     })?;
