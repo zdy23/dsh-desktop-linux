@@ -29,6 +29,12 @@ goes in this order:
 So the typical setup — `dsh` only ever run through `npx` — just works from the
 app icon.
 
+The spawned `dsh` also gets an augmented `PATH` (nvm's node bins,
+`~/.local/bin`, `~/.npm-global/bin`, and the resolved `dsh`'s own bin dir
+prepended). This matters because desktop-launched apps only see the system
+`PATH`, whose Node is usually too old for `dsh` (it needs Node >= 21); without
+this, `dsh` crashes instantly and the splash page spins forever.
+
 ## Prerequisites
 
 - Linux (Debian 12 / Ubuntu 22.04+, or any distro where webkit2gtk-4.1 is installable)

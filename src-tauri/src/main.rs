@@ -175,6 +175,48 @@ fn is_executable(p: &Path) -> bool {
     p.is_file()
 }
 
+/// Build a PATH for the spawned `dsh` that puts modern per-user tooling ahead
+/// of the system dirs.
+///
+/// Desktop-launched apps get a minimal PATH (e.g. `/usr/bin`) that only has the
+/// old system Node, which crashes `dsh` (`node:util.parseEnv` needs Node >= 21).
+/// Prepend nvm's node bins, `~/.local/bin`, `~/.npm-global/bin`, and the
+/// resolved `dsh`'s own bin dir so `#!/usr/bin/env node` and any node
+/// subprocesses `dsh` spawns resolve to the right interpreter.
+#[cfg(not(windows))]
+fn augmented_path(bin: &str) -> Option<String> {
+    let home = std::env::var("HOME").ok()?;
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Some(parent) = Path::new(bin).parent() {
+        dirs.push(parent.to_path_buf());
+    }
+    dirs.push(PathBuf::from(&home).join(".local/bin"));
+    dirs.push(PathBuf::from(&home).join(".npm-global/bin"));
+    // nvm node versions, newest first
+    let nvm_root = PathBuf::from(&home).join(".nvm");
+    if let Ok(entries) = std::fs::read_dir(nvm_root.join("versions/node")) {
+        let mut versions: Vec<PathBuf> = entries
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .collect();
+        versions.sort();
+        versions.reverse();
+        for v in versions {
+            dirs.push(v.join("bin"));
+        }
+    }
+    let current = nvm_root.join("current/bin");
+    if current.is_dir() {
+        dirs.push(current);
+    }
+    // keep the rest of the existing PATH after ours
+    if let Some(existing) = std::env::var_os("PATH") {
+        for d in std::env::split_paths(&existing) {
+            dirs.push(d.into());
+        }
+    }
+    std::env::join_paths(&dirs).ok().map(|p| p.to_string_lossy().into_owned())
+}
+
 /// Spawn `dsh web --host <host> --port <port>` and remember the child.
 fn spawn_dsh(handle: &AppHandle, host: &str, port: u16) -> Result<(), String> {
     #[cfg(windows)]
@@ -195,6 +237,9 @@ fn spawn_dsh(handle: &AppHandle, host: &str, port: u16) -> Result<(), String> {
     let mut cmd = {
         let mut c = Command::new(&bin);
         c.args(["web", "--host", host, "--port", &port.to_string()]);
+        if let Some(path) = augmented_path(&bin) {
+            c.env("PATH", path);
+        }
         c
     };
 
